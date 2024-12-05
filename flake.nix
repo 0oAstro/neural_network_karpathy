@@ -1,66 +1,29 @@
 {
-  description = "Pipulate Development Environment";
+  description = "A Nix-flake-based Jupyter development environment";
 
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
-  };
+  inputs.nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.*.tar.gz";
 
-  outputs = { self, nixpkgs }:
+  outputs =
+    { self
+    , nixpkgs
+    ,
+    }:
     let
-      systems = [ "x86_64-linux" "aarch64-darwin" ];
-      forAllSystems = f: builtins.listToAttrs (map (system: { name = system; value = f system; }) systems);
-
-      # Import local configuration if present
-      localConfig = if builtins.pathExists ./local.nix then import ./local.nix else {};
-
-      # Use the ? operator to check for cudaSupport
-      cudaSupport = if localConfig ? cudaSupport then localConfig.cudaSupport else false;
-
+      supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      forEachSupportedSystem = f:
+        nixpkgs.lib.genAttrs supportedSystems (system: f {
+          pkgs = import nixpkgs { inherit system; };
+        });
     in
     {
-      devShells = forAllSystems (system: {
-        default = let
-          pkgs = import nixpkgs { inherit system; };
-          lib = pkgs.lib;
-
-          # CUDA-specific packages (only on your system)
-          cudaPackages = lib.optionals (cudaSupport && system == "x86_64-linux") (with pkgs; [
-            pkgs.cudatoolkit
-            pkgs.cudnn
-            (pkgs.ollama.override { acceleration = "cuda"; })
+      devShells = forEachSupportedSystem ({ pkgs }: {
+        default = pkgs.mkShell {
+          venvDir = ".venv";
+          packages = with pkgs; [ poetry python311 ] ++ (with python311Packages; [
+            ipykernel
+            pip
+            venvShellHook
           ]);
-
-          # Define Python package set
-          ps = pkgs.python311Packages;
-
-          # Conditionally override PyTorch for CUDA support
-          pytorchPackage = if cudaSupport && system == "x86_64-linux" then
-            ps.pytorch.override { cudaSupport = true; }
-          else if system == "aarch64-darwin" then
-            ps.pytorch-bin
-          else
-            ps.pytorch;
-
-          # Python packages including JupyterLab and others
-          pythonPackages = pkgs.python311.withPackages (ps: [
-            ps.jupyterlab
-            ps.pandas
-            ps.requests
-            ps.numpy
-            ps.matplotlib
-            pytorchPackage
-          ]);
-
-          # Common development tools
-          devTools = [];
-
-        in pkgs.mkShell {
-          buildInputs = devTools ++ [ pythonPackages ] ++ cudaPackages;
-
-          shellHook = ''
-            echo "Welcome to the Pipulate development environment on ${system}!"
-            ${if cudaSupport then "echo 'CUDA support enabled.'" else ""}
-          '';
         };
       });
     };
