@@ -1,187 +1,76 @@
 {
-  description = "Declarative and reproducible Jupyter environments - powered by Nix";
+  description = "Pipulate Development Environment";
 
-  nixConfig.extra-substituters = [
-    "https://tweag-jupyter.cachix.org"
-  ];
-  nixConfig.extra-trusted-public-keys = [
-    "tweag-jupyter.cachix.org-1:UtNH4Zs6hVUFpFBTLaA4ejYavPo5EFFqgd7G7FxGW9g="
-  ];
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+  };
 
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-  inputs.nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-24.05";
-  inputs.flake-compat.url = "github:edolstra/flake-compat";
-  inputs.flake-compat.flake = false;
-  inputs.flake-utils.url = "github:numtide/flake-utils";
-  inputs.ihaskell.url = "github:ihaskell/ihaskell";
-  inputs.ihaskell.inputs.flake-utils.follows = "flake-utils";
-  inputs.nix-dart.url = "github:djacu/nix-dart";
-  inputs.nix-dart.inputs.nixpkgs.follows = "nixpkgs";
-  inputs.nix-dart.inputs.flake-utils.follows = "flake-utils";
-  inputs.npmlock2nix.url = "github:nix-community/npmlock2nix";
-  inputs.npmlock2nix.flake = false;
-  inputs.opam-nix.url = "github:tweag/opam-nix";
-  inputs.opam-nix.inputs.flake-compat.follows = "";
-  inputs.opam-nix.inputs.flake-utils.follows = "flake-utils";
-  inputs.opam-nix.inputs.nixpkgs.follows = "nixpkgs";
-  inputs.pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
-  inputs.pre-commit-hooks.inputs.nixpkgs.follows = "nixpkgs";
-  inputs.pre-commit-hooks.inputs.flake-compat.follows = "";
-  # https://github.com/nix-community/poetry2nix/pull/1329
-  inputs.poetry2nix.url = "github:nix-community/poetry2nix";
-  inputs.poetry2nix.inputs.flake-utils.follows = "flake-utils";
-  inputs.poetry2nix.inputs.nixpkgs.follows = "nixpkgs";
-  inputs.poetry2nix.inputs.treefmt-nix.follows = "";
-  inputs.rust-overlay.url = "github:oxalica/rust-overlay";
-  inputs.rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
+  outputs = { self, nixpkgs }:
+    let
+      systems = [ "x86_64-linux" "aarch64-darwin" ];
+      forAllSystems = f: builtins.listToAttrs (map (system: { name = system; value = f system; }) systems);
 
-  outputs = {
-    self,
-    nixpkgs,
-    nixpkgs-stable,
-    flake-compat,
-    flake-utils,
-    ihaskell,
-    nix-dart,
-    npmlock2nix,
-    opam-nix,
-    pre-commit-hooks,
-    poetry2nix,
-    rust-overlay,
-    ...
-  } @ inputs: let
-    inherit (nixpkgs) lib;
+      # Import local configuration if present
+      localConfig = if builtins.pathExists ./local.nix then import ./local.nix else {};
 
-    SYSTEMS = [
-      "x86_64-linux"
-      "x86_64-darwin"
-      "aarch64-linux"
-      "aarch64-darwin"
-    ];
+      # Use the ? operator to check for cudaSupport
+      cudaSupport = if localConfig ? cudaSupport then localConfig.cudaSupport else false;
 
-    kernelLib = import ./lib/kernels.nix {inherit self lib;};
-  in
-    (flake-utils.lib.eachSystem SYSTEMS (
-      system: let
-        pkgs = nixpkgs.legacyPackages.${system}.appendOverlays [
-          poetry2nix.overlays.default
-        ];
+    in
+    {
+      devShells = forAllSystems (system: {
+        default = let
+          pkgs = import nixpkgs { inherit system; };
+          lib = pkgs.lib;
 
-        python = pkgs.python312;
+          # CUDA-specific packages (only on your system)
+          cudaPackages = lib.optionals (cudaSupport && system == "x86_64-linux") (with pkgs; [
+            pkgs.cudatoolkit
+            pkgs.cudnn
+            (pkgs.ollama.override { acceleration = "cuda"; })
+          ]);
 
-        baseArgs = {
-          inherit self system;
-        };
+          # Define Python package set
+          ps = pkgs.python311Packages;
 
-        pre-commit = pre-commit-hooks.lib.${system}.run {
-          src = self;
-          hooks = {
-            alejandra.enable = true;
-            typos = {
-              enable = true;
-              types = ["file"];
-              files = "\\.((txt)|(md)|(nix)|\\d)$";
-            };
-          };
-          excludes = ["^\\.jupyter/"]; # JUPYTERLAB_DIR
-          settings = {
-            typos.write = true;
-          };
-        };
+          # Conditionally override PyTorch for CUDA support
+          pytorchPackage = if cudaSupport && system == "x86_64-linux" then
+            ps.pytorch.override { cudaSupport = true; }
+          else if system == "aarch64-darwin" then
+            ps.pytorch-bin
+          else
+            ps.pytorch;
 
-        update-poetry-lock =
-          pkgs.writeShellApplication
-          {
-            name = "update-poetry-lock";
-            runtimeInputs = [
-              pkgs.poetry
-            ];
-            text = ''
-              shopt -s globstar
-              for lock in **/poetry.lock; do
-              (
-                echo Updating "$lock"
-                cd "$(dirname "$lock")"
-                poetry update
-              )
-              done
-            '';
-          };
+          # Python packages including JupyterLab and others
+          pythonPackages = pkgs.python311.withPackages (ps: [
+            ps.jupyterlab
+            ps.pandas
+            ps.requests
+            ps.sqlitedict
+            ps.numpy
+            ps.matplotlib
+            ps.nbdev
+            ps.fastai   # For machine learning
+            ps.fastapi  # For web applications
+            ps.simplenote
+            pytorchPackage
+          ]);
 
-        jupyenvLib = lib.makeScope lib.callPackageWith (final: {
-          inherit self system pkgs lib python nix-dart baseArgs kernelLib;
-          docsLib = final.callPackage ./lib/docs.nix {};
-          jupyterLib = final.callPackage ./lib/jupyter.nix {};
-        });
-        inherit (jupyenvLib) docsLib jupyterLib;
-
-        examples = kernelLib.mapKernelsFromPath (self + /examples) ["example"];
-        exampleJupyterlabKernelsNew = (
-          lib.mapAttrs'
-          (
-            name: value:
-              lib.nameValuePair
-              ("jupyterlab-kernel-" + name)
-              (jupyterLib.mkJupyterlabNew value)
-          )
-          examples
-        );
-
-        exampleJupyterlabAllKernelsNew =
-          jupyterLib.mkJupyterlabNew (builtins.attrValues examples);
-      in {
-        lib =
-          jupyterLib
-          // kernelLib
-          // {};
-        packages =
-          rec {
-            jupyterlab-new = jupyterLib.mkJupyterlabNew ./config.nix;
-            jupyterlab = jupyterLib.mkJupyterlabNew {};
-            jupyterlab-all-example-kernels = exampleJupyterlabAllKernelsNew;
-            pub2nix-lock = nix-dart.packages."${system}".pub2nix-lock;
-            inherit update-poetry-lock;
-            inherit (docsLib) docs mkdocs;
-            default = jupyterlab;
-          }
-          // exampleJupyterlabKernelsNew;
-        devShells.default = pkgs.mkShell {
-          packages = [
-            pkgs.alejandra
-            pkgs.typos
-            pkgs.poetry2nix.cli
-            # FIXME: pkgs.poetry is segfaulting on nixpkgs-unstable & poetry2nix
-            # https://github.com/nix-community/poetry2nix/issues/1291
-            pkgs.poetry
-            self.packages."${system}".update-poetry-lock
+          # Common development tools
+          devTools = with pkgs; [
+            git
+            vim
+            # Add other development tools if needed
           ];
+
+        in pkgs.mkShell {
+          buildInputs = devTools ++ [ pythonPackages ] ++ cudaPackages;
+
           shellHook = ''
-            ${pre-commit.shellHook}
+            echo "Welcome to the Pipulate development environment on ${system}!"
+            ${if cudaSupport then "echo 'CUDA support enabled.'" else ""}
           '';
         };
-        checks = {
-          inherit pre-commit;
-        };
-        apps = {
-          update-poetry-lock =
-            flake-utils.lib.mkApp
-            {drv = self.packages."${system}".update-poetry-lock;};
-        };
-      }
-    ))
-    // {
-      templates.default = {
-        path = ./template;
-        description = "Boilerplate for your jupyenv project";
-        welcomeText = ''
-          You have created a jupyenv template.
-
-          Run `nix run` to immediately try it out.
-
-          See the jupyenv documentation for more information.
-
-            https://jupyenv.io/documentation/getting-started/
-        '';
-      };
+      });
     };
 }
