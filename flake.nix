@@ -46,22 +46,13 @@
             ps.jupyterlab
             ps.pandas
             ps.requests
-            ps.sqlitedict
             ps.numpy
             ps.matplotlib
-            ps.nbdev
-            ps.fastai   # For machine learning
-            ps.fastapi  # For web applications
-            ps.simplenote
             pytorchPackage
           ]);
 
           # Common development tools
-          devTools = with pkgs; [
-            git
-            vim
-            # Add other development tools if needed
-          ];
+          devTools = [];
 
         in pkgs.mkShell {
           buildInputs = devTools ++ [ pythonPackages ] ++ cudaPackages;
