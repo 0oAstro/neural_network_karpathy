@@ -6,3 +6,10 @@ This repository documents my journey of following along with the "Neural Network
 - **Objective**: To gain a solid understanding of neural networks from the basics to advanced topics.
 
 Feel free to explore and learn along with me!
+
+
+Current Progress
+
+[x] Bigram
+[x] MLP
+[x] MLP 2
